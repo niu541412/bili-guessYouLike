@@ -39,9 +39,9 @@ const DB = {
 	remove(key) {
 		DB.local.remove(key);
 	},
-	saveRecommands(aid, videos) {
+	saveRecommands(bvid, videos) {
 		let obj = {};
-		obj[aid] = videos;
+		obj[bvid] = videos;
 		DB.set(obj);
 		DB.recommandsCountAdd(videos.length);
 	},
@@ -52,19 +52,24 @@ const DB = {
 			DB.set({count});
 		});
 	},
-	logUserViewHistory(aid) {
+	logUserViewHistory(bvid) {
 		DB.getUserViewHistory((history) => {
-			history.unshift(aid);
+			// 判断浏览记录里是否已经包含这个bvid
+			const exist = history.indexOf(bvid);
+			if( exist > -1 ) {
+				// 如果已存在，就把原有的那个访问记录删掉
+				history.splice(exist, 1);
+			}
+			// 在队列末尾插入bvid
+			history.unshift(bvid);
 			// 保持访问记录最多99条
 			if( history.length > 99 ) {
-				let removedId = history.pop();
-				// 如果被删除的aid在之后的记录中没有再次访问，那么删除这个aid对应的推荐视频
-				if( !history.includes(removedId) ) {
-					DB.get(removedId, (v) => {
-						DB.remove(removedId);
-						DB.recommandsCountAdd(-v.length);
-					});
-				}
+				const removedId = history.pop();
+				// 删除这个bvid对应的推荐视频
+				DB.get(removedId, (v) => {
+					DB.remove(removedId);
+					DB.recommandsCountAdd(-v.length);
+				});
 			}
 			DB.set({history});
 		});
@@ -79,30 +84,37 @@ const DB = {
 // 获取推荐
 const RECOMMAND = {
 	// 获取av号对应的推荐视频
-	get(aid) {
-		DB.get(aid, (videos) => {
+	get(bvid) {
+		DB.get(bvid, (videos) => {
 			if( !videos ) {
 				// 没有获取过推荐视频要去服务端获取
-				HTTP.get(`https://comment.bilibili.com/recommendnew,${aid}`).then((raw) => {
+				//HTTP.get(`https://api.bilibili.com/x/web-interface/view/detail?bvid=${bvid}&aid=&jsonp=jsonp&callback=_`).then((_raw) => {
+					//let raw = _raw.substring(2, _raw.length - 1);
+				HTTP.get(`https://api.bilibili.com/x/web-interface/view/detail?bvid=${bvid}&aid=&jsonp=jsonp&callback=`).then((_raw) => {
+					let raw = _raw.substring(0, _raw.length - 0);
 					let res;
 					try {
 						res = JSON.parse(raw);
 					} catch(e) {
-						return console.error(`${LOG_PREFIX} 解析recommandnew接口返回值失败：${e}`);
+						return console.error(`${LOG_PREFIX} 解析detail接口返回值失败：${e}`);
+					}
+					if( res.code != 0 ) {
+						return console.error(`${LOG_PREFIX} detail接口的返回值不为0：${res}`);
 					}
 					// 去掉我们不需要的信息，节约存储空间..
-					let data = res.data.map((v) => {
+					let data = res.data.Related.map((v) => {
 						return {
 							aid: v.aid,
+							bvid: v.bvid,
 							title: v.title,
-							pic: v.pic,
+							pic: v.pic.replace('http://', 'https://'), // 返回的图片地址里带了http://，append到dom tree的时候会出警告，我们自己处理掉
 							duration: v.duration,
 							stat: v.stat,
 							up: v.owner
 						}
 					});
 					// 保存到数据库
-					DB.saveRecommands(String(aid), data);
+					DB.saveRecommands(String(bvid), data);
 				});
 			}
 		});
@@ -122,16 +134,12 @@ const RECOMMAND = {
 				while( ids.length < max ) {
 					let i = Math.floor(Math.random() * allVideos.length);
 					const v = allVideos[i];
-					if( !ids.includes(v.aid) ) {
-						ids.push(v.aid);
+					if( !ids.includes(v.bvid) ) {
+						ids.push(v.bvid);
 						videos.push(v);
 					}
 				};
-				if( UI.isNewVersion() ) {
-					UI.updateRecommands(videos);
-				} else {
-					UI.updateRecommands_v1(videos);
-				}
+				UI.updateRecommands(videos);
 			});
 		});
 	}
@@ -152,151 +160,23 @@ const UI = {
 	// 是否视频播放页
 	isVideo() {
 		let path = window.location.pathname;
-		if( path.indexOf('video/av') > -1 ) {
+		if( path.indexOf('video/BV') > -1 ) {
 			return true;
 		} else {
 			return false;
 		}
 	},
-
-
-	//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-	// 老版本首页代码
-	//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-	// 
-	// 检测是否灰度到新版
-	isNewVersion() {
-		return !document.querySelector('#home-app');
-	},
-	insertRecommands_v1() {
-		// 复制「动画」模块来做一个「猜你喜欢」
-		let douga = document.querySelector('#bili_douga');
-		let node = douga.cloneNode(true);
-		node.id = '_bili_guessyoulike';
-		// 替换文本内容
-		let name = node.querySelector('.name');
-		name.href = 'javascript: null;';
-		name.textContent = '猜你喜欢';
-		// 修改结构
-		let text = node.querySelector('.bili-tab');
-		while (text.hasChildNodes()) {
-			text.removeChild(text.firstChild);
-		}
-		text.textContent = '这是一个非官方的猜你喜欢模块，有任何建议或bug反馈请联系 ';
-		var info = document.createElement('a');
-		info.href = "https://weibo.com/chitosai";
-		info.target = "_blank";
-		info.textContent = "@千歳";
-		text.appendChild(info);
-		var info2 = document.createTextNode("，Firefox版兼容性问题请反馈");
-		text.appendChild(info2);
-		var info2Link = document.createElement('a');
-		info2Link.href = "https://github.com/niu541412/bili-guessYouLike";
-		info2Link.target = "_blank";
-		info2Link.textContent = "至此";
-		text.appendChild(info2Link);
-		text.style.margin = '3px 0 0 0';
-		text.style.color = '#ccc';
-		let rank = node.querySelector('.sec-rank');
-		while (rank.hasChildNodes()) {
-			rank.removeChild(rank.firstChild);
-		}
-		rank.style.width = '80px';
-		rank.style.height = '530px';
-		rank.style.background = '#f0f0f0';
-		let more = node.querySelector('.link-more');
-		// 创建一个「换一换」按钮
-		let btn = document.createElement('div');
-		btn.classList.add('read-push');
-		btn.style.marginLeft = '-5px';
-		var btn_i = document.createElement("i");
-		var btn_s = document.createElement("span");
-		btn_i.classList.add("icon","icon_read");
-		btn_s.classList.add("info");
-		btn_s.textContent = "换一批";
-		btn.appendChild(btn_i);
-		btn.appendChild(btn_s);
-		// 点这个按钮就通知插件换一批推荐视频
-		btn.addEventListener('click', () => {
-			window.postMessage({
-				type: 'UPDATE_RECOMMANDS'
-			}, '*');
-		});
-		more.insertAdjacentElement('afterend', btn);
-		more.remove();
-		// 扩大左边
-		node.querySelector('.new-comers-module').style.width = 'calc(100% - 80px)';
-		// 插入页面
-		let ref = document.querySelector('#chief_recommend');
-		ref.insertAdjacentElement('afterend', node);
-		return node;
-	},
-	updateRecommands_v1(videos) {
-		let node = document.querySelector('#_bili_guessyoulike') || UI.insertRecommands_v1();
-		// 移除原有的视频
-		let stage = node.querySelector('.storey-box');
-		stage.style.height = '486px';
-		let html = '';
-		while (stage.hasChildNodes()) {
-			stage.removeChild(stage.firstChild);
-		}
-		if( videos.length ) {
-			function toWan(number) {
-				return number > 9999 ? ((number/10000).toFixed(1) + '万') : number;
-			}
-			// 插入新视频
-			videos.forEach((video) => {
-				node1 = document.createElement("img");
-				node1.src = video.pic+"@160w_100h.webp";
-				node2 = document.createElement("div");
-				node2.classList.add("lazy-img");
-				node2.appendChild(node1);
-				node3 = document.createElement("div");
-				node3.classList.add("pic");
-				node3.appendChild(node2);
-				node4 = document.createElement("a");
-				node4.href = "/video/av"+video.aid+"/";
-				node4.target = "_blank";
-				node4.appendChild(node3);
-				node5 = document.createElement("p");
-				node5.classList.add("t");
-				node5.title = video.title;
-				node5.textContent = video.title;
-				node4.appendChild(node5);
-				node6 = document.createElement("i");
-				node6.classList.add("icon");
-				node7 = document.createElement("span");
-				node7.classList.add("play");
-				node7.textContent = toWan(video.stat.view);
-				node7.insertBefore(node6,node7.firstChild);
-				node8 = document.createElement("i");
-				node8.classList.add("icon");
-				node9 = document.createElement("span");
-				node9.classList.add("danmu");
-				node9.textContent = toWan(video.stat.danmaku);
-				node9.insertBefore(node8,node9.firstChild);
-				node10 = document.createElement("p");
-				node10.classList.add("num");
-				node10.appendChild(node7);
-				node10.appendChild(node9);
-				node4.appendChild(node10);
-				node11 = document.createElement("div");
-				node11.classList.add("spread-module");
-				node11.appendChild(node4);
-				html = node11;
-				stage.appendChild(html);
-			});
+	// 获取BVID
+	getBVID() {
+		let url = window.location.href,
+				m = /\/BV(\w+)/.exec(url);
+		if( m ) {
+			return m[1];
 		} else {
-			html = document.createElement("p");
-			html.style.cssText = "color: #777; line-height: 486px; text-align: center;";
-			html.textContent = "观看记录为空，快去看几个视频吧~";
-			stage.appendChild(html);
+			console.error(`${LOG_PREFIX} 找不到BV号：${url}`);
 		}
+		return null;
 	},
-	////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-	////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-	////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
 	// 插入推荐模块
 	insertRecommands() {
 		return new Promise((resolve, reject) => {
@@ -326,7 +206,22 @@ const UI = {
 				name.textContent = '猜你喜欢';
 				// 修改结构
 				const text = document.createElement('div');
-				text.innerHTML = '<div class="text-info" style="color: #ccc;"><span>这是一个非官方的猜你喜欢模块，有任何建议或bug反馈请联系 <a href="https://weibo.com/chitosai" target="_blank">@千歳</a></span></div>'
+				//text.innerHTML = '<div class="text-info" style="color: #ccc;"><span>这是一个非官方的猜你喜欢模块，有任何建议或bug反馈请联系 <a href="https://weibo.com/chitosai" target="_blank">@千歳</a></span></div>'
+				text.textContent = '这是一个非官方的猜你喜欢模块，有任何建议或bug反馈请联系 ';
+				text.classList.add("text-info");
+				text.style.color = '#ccc';
+				var info = document.createElement('a');
+				info.href = "https://weibo.com/chitosai";
+				info.target = "_blank";
+				info.textContent = "@千歳";
+				text.appendChild(info);
+				var info2 = document.createTextNode("，Firefox版兼容性问题请反馈");
+				text.appendChild(info2);
+				var info2Link = document.createElement('a');
+				info2Link.href = "https://github.com/niu541412/bili-guessYouLike";
+				info2Link.target = "_blank";
+				info2Link.textContent = "至此";
+				text.appendChild(info2Link);
 				name.insertAdjacentElement('afterend', text);
 				// 移除右侧「排行」
 				const rank = node.querySelector('.rank-list');
@@ -353,11 +248,11 @@ const UI = {
 				styleSheet.type = 'text/css';
 				const styleList = [
 					// 把猜你喜欢视频平铺占满100%，每行显示6个
-					'#_bili_guessyoulike .zone-list-box { width: 100% !important; }' + 
+					'#_bili_guessyoulike .zone-list-box { width: 100% !important; }' +
 					'#_bili_guessyoulike .video-card-common { width: 15.6%; }' +
 					'#_bili_guessyoulike .video-card-common:nth-child(n+9) { display: block; }' +
 					// 1438px以下宽度时每行只显示5个视频，不然太密集了
-					'@media screen and (max-width: 1438px) { ' + 
+					'@media screen and (max-width: 1438px) { ' +
 						'#_bili_guessyoulike .video-card-common { width: 19%; }' +
 						'#_bili_guessyoulike .video-card-common:nth-child(n+11) { display: none; }' +
 					'}'
@@ -387,6 +282,10 @@ const UI = {
 		// 移除原有的视频
 		const stage = node.querySelector('.zone-list-box');
 		let html = '';
+		//Firefox
+		while (stage.hasChildNodes()) {
+			stage.removeChild(stage.firstChild);
+		}
 		if( videos.length ) {
 			function toWan(number) {
 				return number > 9999 ? ((number/10000).toFixed(1) + '万') : number;
@@ -396,13 +295,74 @@ const UI = {
 			}
 			// 插入新视频
 			videos.forEach((video) => {
-				let v = `<div class="video-card-common"><div class="card-pic" data-aid="${video.aid}"><a href="/video/av${video.aid}" target="_blank"><img src="${video.pic}@206w_116h_1c_100q.webp"><div class="count"><div class="left"><span><i class="bilifont bili-icon_shipin_bofangshu"></i>${toWan(video.stat.view)}</span><span><i class="bilifont bili-icon_shipin_dianzanshu"></i>${toWan(video.stat.like)}</span></div><div class="right"><span>${toMin(video.duration)}</span></div></div></a></div><a href="/video/av${video.aid}" target="_blank" title="${video.title}" class="title">${video.title}</a><a href="//space.bilibili.com/${video.up.mid}/" target="_blank" class="up"><i class="bilifont bili-icon_xinxi_UPzhu"></i>${video.up.name}</a></div>`;
-				html += v;
+				//let v = `<div class="video-card-common"><div class="card-pic" data-aid="${video.aid}" data-bvid="${video.bvid}"><a href="/video/${video.bvid}" target="_blank"><img src="${video.pic}@206w_116h_1c_100q.webp"><div class="count"><div class="left"><span><i class="bilifont bili-icon_shipin_bofangshu"></i>${toWan(video.stat.view)}</span><span><i class="bilifont bili-icon_shipin_dianzanshu"></i>${toWan(video.stat.like)}</span></div><div class="right"><span>${toMin(video.duration)}</span></div></div></a></div><a href="/video/${video.bvid}" target="_blank" title="${video.title}" class="title">${video.title}</a><a href="//space.bilibili.com/${video.up.mid}/" target="_blank" class="up"><i class="bilifont bili-icon_xinxi_UPzhu"></i>${video.up.name}</a></div>`;
+				//html += v;
+				node1 = document.createElement("div");
+				node1.classList.add("video-card-common");
+				node2 = document.createElement("div");
+				node2.classList.add("card-pic");
+				node2.setAttribute("data-aid",video.aid);
+				node2.setAttribute("data-bvid",video.bvid);
+				node1.appendChild(node2);
+				node3 = document.createElement("a");
+				node3.href = `/video/${video.bvid}`;
+				node3.target = "_blank";
+				node2.appendChild(node3);
+				node4 = document.createElement("img");
+				node4.src = `${video.pic}@206w_116h_1c_100q.webp`;
+				node3.appendChild(node4);
+				node5 = document.createElement("div");
+				node5.classList.add("count");
+				node3.appendChild(node5);
+				node6 = document.createElement("div");
+				node6.classList.add("left");
+				node5.appendChild(node6);
+				node7 = document.createElement("span");
+				node6.appendChild(node7);
+				node8 = document.createElement("i");
+				node8.classList.add("bilifont", "bili-icon_shipin_bofangshu");
+				node7.appendChild(node8);
+				node7.textContent=toWan(video.stat.view);
+				node9 = document.createElement("span");
+				node6.appendChild(node9);
+				node10 = document.createElement("i");
+				node10.classList.add("bilifont", "bili-icon_shipin_dianzanshu");
+				node9.appendChild(node10);
+				node9.textContent=toWan(video.stat.like);
+				node11 = document.createElement("div");
+				node11.classList.add("right");
+				node5.appendChild(node11);
+				node12 = document.createElement("span");
+				node12.textContent = toMin(video.duration);
+				node11.appendChild(node12);
+
+				node13 = document.createElement("a");
+				node13.href = `/video/${video.bvid}`;
+				node13.target="_blank";
+				node13.title = video.title;
+				node13.classList.add("title");
+				node13.textContent = video.title;
+				node1.appendChild(node13);
+
+				node14 = document.createElement("a");
+				node14.href = `//space.bilibili.com/${video.up.mid}/`;
+				node14.target="_blank";
+				node14.classList.add("up");
+				node1.appendChild(node14);
+				node15= document.createElement("i");
+				node15.classList.add("bilifont", "bili-icon_xinxi_UPzhu");
+				node14.appendChild(node15);
+				node14.textContent=video.up.name;
+
+				stage.appendChild(node1);
 			});
 		} else {
-			html = '<p style="color: #777; line-height: 360px; text-align: center; width: 100%;">观看记录为空，快去看几个视频吧~</p>';
+			html = document.createElement("p");
+			html.style.cssText = "color: #777; line-height: 486px; text-align: center;";
+			html.textContent = "观看记录为空，快去看几个视频吧~";
+			stage.appendChild(html);
 		}
-		stage.innerHTML = html;
+		//stage.innerHTML = html;
 		// 绑定van-framepreview
 		Array.from(stage.querySelectorAll('.card-pic')).forEach(bili_van_framepreview);
 	},
@@ -416,48 +376,47 @@ const UI = {
 	}
 }
 
-// 20191125 因为数据结构变了，需要清除一次之前的老数据
-// 临时代码，过几个月删掉
-DB.get('_20191125_clear_data', (data) => {
-	if( !data ) {
-		chrome.storage.local.clear(() => {
-			DB.set({'_20191125_clear_data': true});
-			// 当前是否首页？
-			if( UI.isIndex() ) {
-				// TODO: DELETE!
-				if( !UI.isNewVersion() ) {
-					recommandMax = 20;
-				}
-				// /TODO: DELETE!
-				RECOMMAND.recommand(recommandMax);
-				UI.listen();
-			}
-		});
-	} else {
-		// 当前是否首页？
-		if( UI.isIndex() ) {
-			// TODO: DELETE!
-			if( !UI.isNewVersion() ) {
-				recommandMax = 20;
-			}
-			// /TODO: DELETE!
-			RECOMMAND.recommand(recommandMax);
-			UI.listen();
+// 在视频页直接点击关联视频并不会刷新页面，而是直接ajax加载改变url，所以我们要监听hashchange
+// 试了下hashchange事件好像监听不到？不知道为啥，写个dirty check吧
+const URLLISTENER = {
+	timer: null,
+	bvid: '',
+	tick() {
+		const bvid = UI.getBVID();
+		if( bvid !== URLLISTENER.bvid ) {
+			DB.logUserViewHistory(bvid);
+			RECOMMAND.get(bvid);
+			URLLISTENER.bvid = bvid;
+			console.log(`${LOG_PREFIX} Logged ${bvid}`);
 		}
-	}
-});
-
-
-// 当前是否视频播放页？
-// 如果是视频播放页，则获取当前视频的相关推荐视频
-if( UI.isVideo() ) {
-	let url = window.location.href,
-		m = /\/av(\d+)/.exec(url);
-	if( m ) {
-		let aid = m[1];
-		DB.logUserViewHistory(aid);
-		RECOMMAND.get(aid);
-	} else {
-		console.error(`${LOG_PREFIX} 找不到av号：${url}`);
+	},
+	init() {
+		URLLISTENER.timer = setInterval(URLLISTENER.tick, 10000); // 10s检查一次差不多了吧
+		URLLISTENER.tick();
 	}
 }
+
+function init() {
+	// 当前是否首页？
+	if( UI.isIndex() ) {
+		RECOMMAND.recommand(recommandMax);
+		UI.listen();
+	}
+	// 当前是否视频播放页？
+	// 如果是视频播放页，则获取当前视频的相关推荐视频
+	if( UI.isVideo() ) {
+		URLLISTENER.init();
+	}
+}
+
+// 增加了bvid字段，需要清除以前的数据
+DB.get('_20200325_clear_data', (cleared) => {
+	if( cleared ) {
+		init();
+	} else {
+		chrome.storage.local.clear(() => {
+			DB.set({'_20200325_clear_data': true});
+			init();
+		});
+	}
+});

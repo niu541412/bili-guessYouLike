@@ -1,6 +1,6 @@
 async function init_bili_van_framepreview(cover) {
     // 获取预览图
-    const api = '//api.bilibili.com/pvideo?aid=';
+    const api = 'https://api.bilibili.com/pvideo?aid=';
     const raw = await HTTP.get(api + cover.dataset.aid);
     // 获取失败这种事不归我管，直接报错拉倒
     let r = null;
